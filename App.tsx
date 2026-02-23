@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Settings, RefreshCw, UploadCloud, FileJson, Grid, CheckCircle2, AlertCircle, Box, Sparkles, X, Image as ImageIcon, Search, Tag, Copy, HardDrive, MoreHorizontal, Layers, Layout, Component, Figma, LogIn, Code, ZoomIn, ZoomOut, CheckSquare, Square, Download, Play, Loader2, Archive, Trash2, Maximize2, FileText, Folder, Check, Plus, CheckCircle, Eye, Filter, ChevronDown, ChevronRight, MessageSquare, AlertTriangle, ChevronLeft, Database } from 'lucide-react';
 import SettingsPanel from './components/Controls';
 import JsonViewer from './components/AssetCanvas';
-import { fetchStaticManifest, fetchStaticImages, getFigmaConfig, getEnv } from './services/figmaService';
+import { fetchStaticManifest, fetchStaticImages, fetchFigmaProjects, fetchImageFolders, getFigmaConfig, getEnv } from './services/figmaService';
 import { uploadToCloud, getCloudConfig } from './services/headlessService';
 import { analyzeDesignSystem, analyzeComponentVisuals, VisualAnalysisResult } from './services/geminiService';
 import { loadGoogleScripts, listDriveFiles, isGoogleApiInitialized } from './services/googleDriveService';
@@ -25,7 +25,6 @@ const MultiSelectFilter = ({
   const [search, setSearch] = useState('');
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Close on click outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
@@ -96,7 +95,6 @@ const MultiSelectFilter = ({
   );
 };
 
-// --- NEW COMPONENT: Active Filters Chips ---
 const ActiveFiltersChips = ({ 
   filters, 
   onRemove, 
@@ -133,7 +131,6 @@ const ActiveFiltersChips = ({
   );
 };
 
-// Asset Generation Helper (Fallback)
 const generateMockAssets = (count: number): DriveAsset[] => {
   return [];
 };
@@ -146,14 +143,13 @@ interface GeneratedImage {
   url: string;
   templateName: string;
   componentName: string;
-  componentNames: string[]; // Added for CSV details
-  variantName?: string; // NEW: Specific combination name for file naming
-  imageName?: string;   // NEW: Specific image filename for file naming
+  componentNames: string[]; 
+  variantName?: string; 
+  imageName?: string;   
   timestamp: number;
-  folder?: string; // Added to track source image folder
+  folder?: string; 
 }
 
-// Optimized Image Card Component with Loading State
 const ImageCard = ({ asset, isSelected, toggleSelection, setPreviewItem }: any) => {
   const [isLoaded, setIsLoaded] = useState(false);
   return (
@@ -162,7 +158,6 @@ const ImageCard = ({ asset, isSelected, toggleSelection, setPreviewItem }: any) 
       onClick={() => toggleSelection(asset.id)}
     >
       <div className="aspect-square bg-gray-100 rounded-lg overflow-hidden border border-gray-200 relative">
-        {/* Loading Skeleton */}
         {!isLoaded && (
           <div className="absolute inset-0 flex items-center justify-center bg-gray-50">
             <Loader2 className="w-5 h-5 text-gray-300 animate-spin" />
@@ -198,7 +193,6 @@ const ImageCard = ({ asset, isSelected, toggleSelection, setPreviewItem }: any) 
   );
 };
 
-// Helper for Cartesian Product of arrays
 function cartesianProduct<T>(arrays: T[][]): T[][] {
   return arrays.reduce<T[][]>(
     (a, b) => a.flatMap(d => b.map(e => [...d, e])),
@@ -206,111 +200,74 @@ function cartesianProduct<T>(arrays: T[][]): T[][] {
   );
 }
 
-// Updated Logic (Dynamic & Scalable)
 const extractVariantKey = (name: string): string | null => {
   if (!name) return null;
-  
-  // Normalizes the string: lowercases and removes all spaces and special characters.
-  // "First Stay Free" -> "firststayfree"
-  // "50% OFF" -> "50off"
-  // "$5 First Night" -> "5firstnight"
   return name.toLowerCase().replace(/[^a-z0-9]/g, '');
 };
 
-// Helper: Convert Figma Color to CSS
 const figmaColorToCss = (color: { r: number, g: number, b: number, a: number }, opacity: number = 1) => {
   if (!color) return 'transparent';
-
-  // Detect if color values are likely 0-255 integers (if any component > 1)
   const isIntegerRange = color.r > 1 || color.g > 1 || color.b > 1;
-
   const r = isIntegerRange ? Math.round(color.r) : Math.round(color.r * 255);
   const g = isIntegerRange ? Math.round(color.g) : Math.round(color.g * 255);
   const b = isIntegerRange ? Math.round(color.b) : Math.round(color.b * 255);
-
   return `rgba(${r}, ${g}, ${b}, ${color.a * opacity})`;
 };
 
-// OPTIMIZED HELPER: Component Finder using Map for O(1) lookup
 const findComponentForLayer = (
   layer: TemplateLayer, 
   componentMap: Map<string, ComponentMetadata>, 
   allComponents: ComponentMetadata[] 
 ): ComponentMetadata | undefined => {
    
-  // 1. Direct ID Match (Best Strategy - O(1))
   if (layer.componentId && componentMap.has(layer.componentId)) {
     return componentMap.get(layer.componentId);
   }
 
-  // 2. Clean Name Match (O(1))
   const cleanLayerName = layer.name.replace(/\s+\(\d+\)$/, '').trim();
   if (componentMap.has(cleanLayerName)) {
     return componentMap.get(cleanLayerName);
   }
 
-  // 3. Exact Name Match (O(1))
   if (componentMap.has(layer.name)) {
     return componentMap.get(layer.name);
   }
 
-  // 4. Fuzzy / StartsWith Match (Fallback - O(N))
-  // Kept for backward compatibility but used rarely
   return allComponents.find(c => {
     const cNameLower = c.name.toLowerCase();
     const cleanLayerNameLower = cleanLayerName.toLowerCase();
     const baseName = c.name.split(' (')[0].toLowerCase();
-
     return cNameLower.startsWith(cleanLayerNameLower) ||
       cleanLayerNameLower.startsWith(baseName) ||
       (c.componentSetName && cleanLayerNameLower.includes(c.componentSetName.toLowerCase()));
   });
 };
 
-// HELPER: Identify if a layer is intended to be a VPS Image Placeholder
 const isPlaceholderImage = (layer: TemplateLayer): boolean => {
-  // STRICT MODE: Match "Hero" exactly as requested
   const name = layer.name.toLowerCase().trim();
   return name === 'hero';
 };
 
-// HELPER: Generate standardized filename (Regex Fix Applied)
 const getDownloadFilename = (img: GeneratedImage) => {
     const safeTemplate = img.templateName.replace(/\s+/g, '_').replace(/[^a-z0-9_-]/gi, '');
-    
     let variantPart = '';
-
     if (img.componentNames && img.componentNames.length > 0) {
-        // 1. Find the component that is the "Property" or "Offer"
         const targetComponent = img.componentNames.find(name => 
             name.includes('Property') || name.includes('Offer')
         );
-
         if (targetComponent) {
             variantPart = targetComponent
-                // 1. Remove "Property" or "Offer" AND any trailing index (e.g., "Property 1")
-                // This regex matches "Property" followed optionally by spaces and digits
                 .replace(/(Property|Offer)(\s+\d+)?/gi, '')
-                
-                // 2. Remove equals signs (Figma often formats as "Property 1=Value")
                 .replace(/=/g, ' ') 
-                
-                // 3. Standard clean up
-                .replace(/_/g, ' ')   // temp replace underscore with space to trim
-                .trim()               // trim whitespace
-                .replace(/\s+/g, '_'); // replace space back to underscore
+                .replace(/_/g, ' ')   
+                .trim()               
+                .replace(/\s+/g, '_'); 
         }
     }
-
-    // Clean up the variant string (allow dots for prices like 19.99)
     const safeVariant = variantPart.replace(/[^a-z0-9_.-]/gi, '');
-    
     let safeImage = (img.imageName || '').replace(/\s+/g, '_').replace(/[^a-z0-9_.-]/gi, '');
-    
-    // Remove extension from image if present to prevent double extensions
     safeImage = safeImage.replace(/\.[^/.]+$/, "");
     
-    // Filter out empty parts
     const parts = [safeTemplate, safeVariant, safeImage].filter(Boolean);
     return `${parts.join('_')}.png`;
 };
@@ -320,10 +277,15 @@ const App: React.FC = () => {
   const [activeView, setActiveView] = useState<'list' | 'images' | 'json' | 'json_images' | 'rendered' | 'generated'>('list');
   const [showDevTools, setShowDevTools] = useState(false);
 
+  // Configuration States
+  const [figmaFileId, setFigmaFileId] = useState<string>(localStorage.getItem('figma_file_key') || 'zH45M5SvQ8E6G9lwUXW4ny');
+  const [imageFolder, setImageFolder] = useState<string>(localStorage.getItem('image_folder_key') || 'Dog_Stop');
+  const [availableProjects, setAvailableProjects] = useState<{id: string, name: string}[]>([]);
+  const [availableFolders, setAvailableFolders] = useState<string[]>([]);
+
   // Loading States
   const [isLoadingAll, setIsLoadingAll] = useState(false);
   const [loadingStatus, setLoadingStatus] = useState('');
-
   const [uploading, setUploading] = useState(false);
 
   // Data States
@@ -339,7 +301,6 @@ const App: React.FC = () => {
   const [selectedImageIds, setSelectedImageIds] = useState<Set<string>>(new Set());
 
   // Image Filtering State
-  // --- UPDATED: Replaced activeImageFolder (string) with libraryFolderFilter (Set) for multi-select ---
   const [libraryFolderFilter, setLibraryFolderFilter] = useState<Set<string>>(new Set());
   const [currentLibraryPage, setCurrentLibraryPage] = useState(1);
 
@@ -351,9 +312,7 @@ const App: React.FC = () => {
 
   // Expanded states for accordion filters
   const [expandedFilterSets, setExpandedFilterSets] = useState<Set<string>>(new Set(['Templates']));
-
   const [selectedSet, setSelectedSet] = useState<string>('all');
-
   const [manifest, setManifest] = useState<HeadlessManifest | null>(null);
   const [error, setError] = useState('');
 
@@ -372,28 +331,21 @@ const App: React.FC = () => {
 
   // Preview Modal
   const [previewItem, setPreviewItem] = useState<ComponentMetadata | any | null>(null);
-
-  // Download Warning State
   const [showDownloadWarning, setShowDownloadWarning] = useState(false);
   const [pendingDownloadSubset, setPendingDownloadSubset] = useState<GeneratedImage[] | undefined>(undefined);
-
-  // Generation Warning State
   const [showGenerationWarning, setShowGenerationWarning] = useState(false);
 
-  // --- OPTIMIZATION 1: Create Fast Lookup Map ---
   const componentMap = useMemo(() => {
     const map = new Map<string, ComponentMetadata>();
     components.forEach(c => {
       if (c.id) map.set(c.id, c);
       map.set(c.name, c);
-      // Index by Clean Name
       const cleanName = c.name.split(' (')[0].trim();
       map.set(cleanName, c);
     });
     return map;
   }, [components]);
 
-  // Prevent accidental tab closure during generation
   useEffect(() => {
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
       if (isGenerating) {
@@ -406,8 +358,29 @@ const App: React.FC = () => {
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, [isGenerating]);
 
-  // --- INITIALIZATION ---
   useEffect(() => {
+    if (!localStorage.getItem('figma_file_key') && figmaFileId) {
+        localStorage.setItem('figma_file_key', figmaFileId);
+    }
+    if (!localStorage.getItem('image_folder_key') && imageFolder) {
+        localStorage.setItem('image_folder_key', imageFolder);
+    }
+    
+    // Fetch available projects and folders for dropdowns
+    const loadConfigData = async () => {
+      try {
+        const [projects, folders] = await Promise.all([
+          fetchFigmaProjects(),
+          fetchImageFolders()
+        ]);
+        setAvailableProjects(projects);
+        setAvailableFolders(folders);
+      } catch (err) {
+        console.error("Failed to load configuration data", err);
+      }
+    };
+    loadConfigData();
+
     const loadedDriveConfig = {
       clientId: getEnv('GOOGLE_DRIVE_CLIENT_ID') || localStorage.getItem('google_drive_client_id') || '',
       apiKey: getEnv('GOOGLE_DRIVE_API_KEY') || localStorage.getItem('google_drive_api_key') || '',
@@ -415,13 +388,32 @@ const App: React.FC = () => {
     };
     setDriveConfig(loadedDriveConfig);
     if (loadedDriveConfig.apiKey && loadedDriveConfig.folderId) setIsDriveConnected(true);
+    
     handleRefreshSource(loadedDriveConfig);
   }, []);
 
-  // --- MASTER REFRESH FUNCTION ---
   const handleRefreshSource = async (overrideDriveConfig?: GoogleDriveConfig) => {
     setIsLoadingAll(true);
     setError('');
+    
+    const currentFigmaId = localStorage.getItem('figma_file_key') || getEnv('FIGMA_FILE_KEY');
+    if (!currentFigmaId) {
+        setError('Please provide a Figma File ID in the Configuration panel.');
+        setLoadingStatus('');
+        setIsLoadingAll(false);
+        setShowSettings(true); 
+        return;
+    }
+
+    const currentImageFolder = localStorage.getItem('image_folder_key') || getEnv('IMAGE_FOLDER_KEY');
+    if (!currentImageFolder) {
+        setError('Please provide an Image Folder Name in the Configuration panel.');
+        setLoadingStatus('');
+        setIsLoadingAll(false);
+        setShowSettings(true); 
+        return;
+    }
+
     setLoadingStatus('Connecting to Source...');
 
     try {
@@ -542,14 +534,11 @@ const App: React.FC = () => {
     setExpandedFilterSets(newSet);
   };
 
-  // --- NEW: Helper to consolidate all active filters into one array for the UI ---
   const activeFiltersList = useMemo(() => {
     const list: { id: string, label: string, type: string }[] = [];
-    
     generatedTemplateFilter.forEach(t => list.push({ id: t, label: t, type: 'Template' }));
     generatedFolderFilter.forEach(f => list.push({ id: f, label: f, type: 'Folder' }));
     generatedFilter.forEach(c => list.push({ id: c, label: c, type: 'Variant' }));
-    
     return list;
   }, [generatedTemplateFilter, generatedFolderFilter, generatedFilter]);
 
@@ -559,7 +548,6 @@ const App: React.FC = () => {
     if (type === 'Variant') toggleGeneratedFilter(id);
   };
 
-  // --- NEW: Library Filter Handlers ---
   const toggleLibraryFolderFilter = (folder: string) => {
     const newSet = new Set(libraryFolderFilter);
     if (newSet.has(folder)) newSet.delete(folder);
@@ -617,13 +605,11 @@ const App: React.FC = () => {
     return style;
   };
 
-  // --- GENERATION HANDLERS ---
   const handleGenerateClick = () => {
     if (selectedTemplateIds.size === 0) {
       setError("Please select at least one template.");
       return;
     }
-    // High volume check: 100+
     if (generationCount >= 100) {
       setShowGenerationWarning(true);
     } else {
@@ -635,7 +621,6 @@ const App: React.FC = () => {
     setIsGenerating(true);
     setGenerationPhase('preparing');
     
-    // 1. Reset State
     setGeneratedImages([]);
     setSelectedGeneratedImageIds(new Set());
     setGeneratedFilter(new Set());
@@ -647,7 +632,6 @@ const App: React.FC = () => {
     const activeImages = displayAssets.filter(a => selectedImageIds.has(a.id));
     const imagesToUse = activeImages; 
 
-    // 2. Image Caching & Pre-loading
     const imageCache: Record<string, HTMLImageElement> = {};
 
     const loadImage = (url: string): Promise<HTMLImageElement> => {
@@ -655,7 +639,6 @@ const App: React.FC = () => {
       return new Promise((resolve) => {
         const img = new Image();
         img.crossOrigin = "Anonymous";
-        // Cache-busting to prevent CORS tainting
         const safeUrl = url.includes('?') ? `${url}&t=${Date.now()}` : `${url}?t=${Date.now()}`;
         
         img.onload = async () => {
@@ -664,7 +647,6 @@ const App: React.FC = () => {
           resolve(img);
         };
         img.onerror = () => {
-           // Fallback proxy
            if (!url.includes('corsproxy.io')) {
              const proxy = new Image();
              proxy.crossOrigin = "Anonymous";
@@ -677,7 +659,6 @@ const App: React.FC = () => {
       });
     };
 
-    // Pre-load Logic
     const uniqueImageUrls = new Set<string>();
     activeTemplates.forEach(template => {
       template.layers.forEach(layer => {
@@ -722,8 +703,7 @@ const App: React.FC = () => {
       await Promise.all(promises);
     }
 
-    // 3. Prepare Generation
-    await new Promise(r => setTimeout(r, 100)); // UI Breather
+    await new Promise(r => setTimeout(r, 100));
     const totalToGenerate = generationCount; 
     setGenerationPhase('generating');
     setGenerationProgress({ current: 0, total: totalToGenerate });
@@ -733,7 +713,6 @@ const App: React.FC = () => {
     let loopIterations = 0;
     const yieldFreq = 20;
 
-    // Helper: Draw Text (Explicit Context)
     const drawText = (ctx: CanvasRenderingContext2D, layer: TemplateLayer) => {
       ctx.save();
       const fontSize = layer.fontSize || 16;
@@ -761,7 +740,6 @@ const App: React.FC = () => {
       ctx.restore();
     };
 
-    // Helper: Draw Image (Explicit Context)
     const drawScaledImage = (ctx: CanvasRenderingContext2D, layer: TemplateLayer, img: HTMLImageElement) => {
         const scaleW = layer.width / img.width;
         const scaleH = layer.height / img.height;
@@ -774,15 +752,13 @@ const App: React.FC = () => {
         ctx.save();
         ctx.beginPath();
         ctx.rect(layer.x, layer.y, layer.width, layer.height);
-        ctx.clip(); // This clip persists if we don't reset the canvas!
+        ctx.clip(); 
         ctx.drawImage(img, layer.x + offsetX, layer.y + offsetY, drawW, drawH);
         ctx.restore();
     };
 
-    // 4. Main Loop
     for (const template of activeTemplates) {
       const canvas = document.createElement('canvas');
-      // Set dimensions initially
       canvas.width = template.width;
       canvas.height = template.height;
       const ctx = canvas.getContext('2d');
@@ -821,7 +797,6 @@ const App: React.FC = () => {
                }
             } else if (original) { candidates = [original]; } 
             else {
-               // Fuzzy logic
                const cleanName = layer.name.replace(/\s+\(\d+\)$/, '').trim();
                const likelySetName = cleanName.split('/')[0].trim();
                const fuzzyCandidates = components.filter(c => c.componentSetName === likelySetName);
@@ -858,13 +833,8 @@ const App: React.FC = () => {
 
           try {
             if (ctx) {
-                // --- CRITICAL FIX: HARD RESET ---
-                // Setting width resets all canvas state (clipping, styles, transforms)
-                // This prevents "blank images" caused by previous loop errors or persistent clips
                 canvas.width = template.width; 
-                // Re-setting width clears the context, so we don't need clearRect
 
-                // Draw Background
                 let bgDrawn = false;
                 if (template.backgroundColor) {
                   ctx.fillStyle = figmaColorToCss(template.backgroundColor);
@@ -880,11 +850,9 @@ const App: React.FC = () => {
                 }
                 if (!bgDrawn) { ctx.fillStyle = '#FFFFFF'; ctx.fillRect(0, 0, canvas.width, canvas.height); }
 
-                // Draw Layers
                 for (let i = 0; i < template.layers.length; i++) {
                     const layer = template.layers[i];
                     
-                    // 1. Component Slots
                     const slotIndex = componentSlots.findIndex(s => s.layerIndex === i);
                     if (slotIndex !== -1 || ['INSTANCE', 'COMPONENT'].includes(layer.type)) {
                         let componentToRender: ComponentMetadata | undefined;
@@ -896,14 +864,12 @@ const App: React.FC = () => {
                             if (img.width > 0) { 
                                 drawScaledImage(ctx, layer, img); 
                             } else {
-                                // Fallback for broken images
                                 ctx.fillStyle = '#eeeeee'; ctx.fillRect(layer.x, layer.y, layer.width, layer.height);
                             }
                         }
                         continue;
                     }
 
-                    // 2. VPS Images (Hero)
                     if (isPlaceholderImage(layer)) {
                         const vpsAsset = currentImage;
                         if (vpsAsset && vpsAsset.thumbnailLink) {
@@ -913,11 +879,9 @@ const App: React.FC = () => {
                         continue;
                     }
 
-                    // 3. Text
                     if (layer.type === 'TEXT') { 
                         drawText(ctx, layer); 
                     }
-                    // 4. Shapes/Vectors with Fills
                     else if (['RECTANGLE', 'FRAME', 'GROUP', 'VECTOR', 'ELLIPSE', 'STAR', 'LINE', 'REGULAR_POLYGON'].includes(layer.type)) {
                         if (layer.fillImageUrl) {
                             const img = await loadImage(layer.fillImageUrl);
@@ -998,24 +962,6 @@ const App: React.FC = () => {
     if (imagesToZip.length > 150) { setPendingDownloadSubset(subset); setShowDownloadWarning(true); return; }
     await processZipDownload(subset);
   };
-  const handleDownloadCsv = () => {
-    if (generatedImages.length === 0) return;
-    const maxComponents = Math.max(...generatedImages.map(img => img.componentNames.length));
-    let csvContent = "data:text/csv;charset=utf-8,";
-    const headers = ["Template Name", "Variant ID", "Filename", "Preview URL (Public)", "Source Folder", ...Array.from({ length: maxComponents }, (_, i) => `Component ${i + 1}`)];
-    csvContent += headers.join(",") + "\r\n";
-    generatedImages.forEach(img => {
-      const filename = getDownloadFilename(img);
-      const safeTemplate = img.templateName.replace(/[^a-z0-9]/gi, '_').toLowerCase();
-      const safeId = img.id.split('_').pop() || '000';
-      const storageFilename = `gen_${safeTemplate}_${safeId}.png`;
-      const publicUrl = `https://storage.googleapis.com/campaign-assets-prod/${storageFilename}`;
-      const row = [`"${img.templateName}"`, img.id, `"${filename}"`, publicUrl, `"${img.folder || ''}"`, ...img.componentNames.map(n => `"${n.replace(/"/g, '""')}"`)];
-      csvContent += row.join(",") + "\r\n";
-    });
-    const encodedUri = encodeURI(csvContent);
-    const link = document.createElement("a"); link.setAttribute("href", encodedUri); link.setAttribute("download", "campaign_manifest.csv"); document.body.appendChild(link); link.click(); document.body.removeChild(link);
-  };
 
   const getPageTitle = () => {
     switch (activeView) {
@@ -1023,7 +969,7 @@ const App: React.FC = () => {
       case 'images': return 'Images';
       case 'json': return 'System Manifest (JSON)';
       case 'json_images': return 'Raw Images Payload (Debug)';
-      case 'rendered': return 'Templates'; // Updated Title
+      case 'rendered': return 'Templates'; 
       case 'generated': return 'Generation Gallery';
     }
   };
@@ -1055,18 +1001,7 @@ const App: React.FC = () => {
     return Array.from(new Set(displayAssets.map(a => a.folder || 'Uncategorized'))).sort();
   }, [displayAssets]);
 
-  const assetsByFolder = useMemo(() => {
-    const groups: Record<string, DriveAsset[]> = {};
-    displayAssets.forEach(asset => {
-      const folder = asset.folder || 'Uncategorized';
-      if (!groups[folder]) groups[folder] = [];
-      groups[folder].push(asset);
-    });
-    return groups;
-  }, [displayAssets]);
-
   const filteredImages = useMemo(() => {
-    // --- UPDATED: Filtering Logic for Multi-Select ---
     if (libraryFolderFilter.size === 0) return displayAssets;
     return displayAssets.filter(a => libraryFolderFilter.has(a.folder || 'Uncategorized'));
   }, [displayAssets, libraryFolderFilter]);
@@ -1076,9 +1011,7 @@ const App: React.FC = () => {
     return filteredImages.slice((currentLibraryPage - 1) * ITEMS_PER_PAGE, currentLibraryPage * ITEMS_PER_PAGE);
   }, [filteredImages, currentLibraryPage]);
 
-  // --- UPDATED: Bulk Select Logic for Filtered Images ---
   const handleBulkSelectImages = (shouldSelect: boolean) => {
-    // filteredImages is already the correct subset based on the active filter
     const newSet = new Set(selectedImageIds);
     filteredImages.forEach(asset => {
       if (shouldSelect) newSet.add(asset.id);
@@ -1162,9 +1095,9 @@ const App: React.FC = () => {
     return total;
   }, [selectedTemplateIds, templates, components, componentMap, selectedComponentIds, selectedImageIds, displayAssets]);
    
-  const isHighVolume = generationCount >= 100; // Updated Threshold
+  const isHighVolume = generationCount >= 100;
    
-const generatedFilterData = useMemo(() => {
+  const generatedFilterData = useMemo(() => {
     const groups: Record<string, { total: number, variants: Map<string, number> }> = {};
     const ungrouped: Map<string, number> = new Map();
     
@@ -1173,7 +1106,6 @@ const generatedFilterData = useMemo(() => {
         const comp = components.find(c => c.name === name);
         const setName = comp?.componentSetName;
         
-        // NEW: Ignore any component sets containing "Disclaimer"
         if (setName && setName.includes("Disclaimer")) {
           return; 
         }
@@ -1191,6 +1123,7 @@ const generatedFilterData = useMemo(() => {
     
     return { groups, ungrouped };
   }, [generatedImages, components]);
+  
   const uniqueTemplates = useMemo(() => Array.from(new Set(generatedImages.map(img => img.templateName))).sort(), [generatedImages]);
 
   const uniqueGeneratedFolders = useMemo(() => {
@@ -1246,12 +1179,10 @@ const generatedFilterData = useMemo(() => {
       </div>
 
       {/* MAIN CONTENT */}
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className="flex-1 flex flex-col min-w-0 relative">
         <div className="h-16 bg-white border-b border-gray-200 flex items-center justify-between px-8 shrink-0 z-10">
           <div className="flex items-center gap-3">
             <h2 className="text-lg font-semibold text-gray-900">{getPageTitle()}</h2>
-            
-            {/* NEW: Total Count Pill for Generation Gallery */}
             {activeView === 'generated' && generatedImages.length > 0 && (
               <span className="px-2.5 py-0.5 rounded-full bg-indigo-50 text-indigo-600 text-xs font-medium border border-indigo-100 shadow-sm">
                 {generatedImages.length}
@@ -1309,7 +1240,6 @@ const generatedFilterData = useMemo(() => {
         {error && (<div className="bg-red-50 border-b border-red-100 px-8 py-3 flex items-center gap-2 text-sm text-red-700"><AlertCircle className="w-4 h-4" />{error}</div>)}
         {isLoadingAll && (<div className="bg-indigo-50 border-b border-indigo-100 px-8 py-3 flex items-center gap-4 text-sm text-indigo-900 animate-fade-in"><Loader2 className="w-4 h-4 animate-spin" /><span className="font-medium">{loadingStatus}</span></div>)}
         
-        {/* GENERATION PROGRESS BANNER (Updated) */}
         {isGenerating && (
           <div className="bg-indigo-50 border-b border-indigo-100 px-8 py-4 flex flex-col justify-center text-sm text-indigo-900 animate-fade-in">
             <div className="flex justify-between items-center mb-2">
@@ -1378,11 +1308,9 @@ const generatedFilterData = useMemo(() => {
 
           {activeView === 'images' && (
             <div className="flex-1 flex flex-col overflow-hidden bg-gray-50/50">
-              {/* NEW LIBRARY FILTER TOOLBAR */}
               <div className="bg-white border-b border-gray-200 px-8 py-4 z-30 shadow-sm">
                 <div className="flex items-center gap-3">
                   
-                  {/* Conditionally render filters only if there is more than 1 folder */}
                   {sortedFolders.length > 1 && (
                     <>
                       <div className="flex items-center gap-2 mr-4 text-gray-400">
@@ -1390,7 +1318,6 @@ const generatedFilterData = useMemo(() => {
                         <span className="text-sm font-medium">Filters</span>
                       </div>
                       
-                      {/* Folders Dropdown */}
                       <MultiSelectFilter 
                         label="Categories" 
                         options={sortedFolders} 
@@ -1400,7 +1327,6 @@ const generatedFilterData = useMemo(() => {
                     </>
                   )}
                   
-                  {/* Info about count (dynamically shifts left if filters are hidden) */}
                   <div className={`${sortedFolders.length > 1 ? 'ml-auto' : ''} flex items-center gap-3 text-xs text-gray-400`}>
                      <span>{filteredImages.length} images shown</span>
                      {selectedImageIds.size > 0 && (
@@ -1409,7 +1335,6 @@ const generatedFilterData = useMemo(() => {
                   </div>
                 </div>
 
-                {/* Active Chips Row (also hidden if 1 or fewer folders) */}
                 {sortedFolders.length > 1 && (
                   <ActiveFiltersChips 
                     filters={libraryActiveFiltersList} 
@@ -1422,7 +1347,6 @@ const generatedFilterData = useMemo(() => {
                 )}
               </div>
 
-              {/* MAIN LIBRARY CONTENT */}
               <div className="flex-1 overflow-auto p-8 custom-scrollbar">
                 {isLoadingAll ? (
                     <div className="flex flex-col items-center justify-center h-40"> <RefreshCw className="w-6 h-6 animate-spin text-gray-400 mb-2" /> <p className="text-xs text-gray-400">Fetching from API...</p> </div>
@@ -1521,7 +1445,6 @@ const generatedFilterData = useMemo(() => {
 
           {activeView === 'generated' && (
             <div className="flex-1 flex flex-col overflow-hidden bg-gray-50/50">
-                {/* NEW FILTER TOOLBAR */}
                 <div className="bg-white border-b border-gray-200 px-8 py-4 z-30 shadow-sm">
                     <div className="flex items-center gap-3">
                         <div className="flex items-center gap-2 mr-4 text-gray-400">
@@ -1529,7 +1452,6 @@ const generatedFilterData = useMemo(() => {
                             <span className="text-sm font-medium">Filters</span>
                         </div>
 
-                        {/* Templates Dropdown */}
                         <MultiSelectFilter 
                             label="Templates" 
                             options={uniqueTemplates} 
@@ -1537,7 +1459,6 @@ const generatedFilterData = useMemo(() => {
                             onToggle={toggleGeneratedTemplateFilter} 
                         />
 
-                        {/* Folders Dropdown */}
                         {uniqueGeneratedFolders.length > 0 && (
                             <MultiSelectFilter 
                                 label="Images" 
@@ -1547,10 +1468,8 @@ const generatedFilterData = useMemo(() => {
                             />
                         )}
 
-                        {/* Separator */}
                         <div className="h-8 w-px bg-gray-200 mx-2"></div>
 
-                        {/* Dynamic Component Set Dropdowns */}
                         {Object.entries(generatedFilterData.groups).map(([setName, data]) => (
                             <MultiSelectFilter 
                                 key={setName}
@@ -1562,7 +1481,6 @@ const generatedFilterData = useMemo(() => {
                         ))}
                     </div>
 
-                    {/* Active Chips Row */}
                     <ActiveFiltersChips 
                         filters={activeFiltersList} 
                         onRemove={handleRemoveFilter} 
@@ -1574,7 +1492,6 @@ const generatedFilterData = useMemo(() => {
                     />
                 </div>
 
-                {/* MAIN CONTENT AREA */}
                 <div className="flex-1 overflow-auto p-8 custom-scrollbar">
                     {generatedImages.length === 0 ? (
                         <div className="h-full flex flex-col items-center justify-center text-gray-400">
@@ -1593,7 +1510,6 @@ const generatedFilterData = useMemo(() => {
                                 {paginatedImages.map(img => {
                                     const isSelected = selectedGeneratedImageIds.has(img.id);
                                     
-                                    // NEW: Find the specific component name that belongs to the 'Offer' set
                                     const offerName = img.componentNames.find(name => {
                                         const comp = components.find(c => c.name === name);
                                         return comp?.componentSetName?.includes('Offer');
@@ -1604,7 +1520,6 @@ const generatedFilterData = useMemo(() => {
                                             <div className="bg-gray-100 aspect-square relative overflow-hidden">
                                                 <img src={img.url} alt={img.componentName} className="w-full h-full object-contain" />
                                                 
-                                                {/* Selection Overlay */}
                                                 <div className="absolute inset-0 bg-black/0 group-hover:bg-black/5 transition-colors" />
                                                 <div onClick={() => toggleGeneratedImageSelection(img.id)} className="absolute top-2 left-2 cursor-pointer p-1 bg-white/80 rounded hover:bg-white shadow-sm backdrop-blur-sm z-10"> 
                                                     <div className={`w-4 h-4 border rounded flex items-center justify-center transition-colors ${isSelected ? 'bg-indigo-600 border-indigo-600' : 'border-gray-400 bg-white'}`}> 
@@ -1612,14 +1527,12 @@ const generatedFilterData = useMemo(() => {
                                                     </div> 
                                                 </div>
                                                 
-                                                {/* Info Badge */}
                                                 <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
                                                     <span className="text-[10px] bg-black/70 text-white px-2 py-1 rounded-full backdrop-blur-md">
                                                         {img.templateName.substring(0, 15)}...
                                                     </span>
                                                 </div>
 
-                                                {/* Action Bar */}
                                                 <div className="absolute bottom-0 left-0 right-0 p-2 bg-white/95 backdrop-blur-sm transform translate-y-full group-hover:translate-y-0 transition-transform duration-200 flex items-center justify-between border-t border-gray-100">
                                                     <button onClick={() => downloadImage(img.url, getDownloadFilename(img))} className="p-1.5 text-gray-500 hover:text-indigo-600 hover:bg-indigo-50 rounded transition-colors" title="Download"> <Download className="w-4 h-4" /> </button>
                                                     <button onClick={() => setPreviewItem({ name: img.componentName, thumbnailUrl: img.url, description: img.templateName })} className="p-1.5 text-gray-500 hover:text-indigo-600 hover:bg-indigo-50 rounded transition-colors" title="Zoom"> <Maximize2 className="w-4 h-4" /> </button>
@@ -1627,11 +1540,8 @@ const generatedFilterData = useMemo(() => {
                                                 </div>
                                             </div>
                                             
-                                            {/* UPDATED FOOTER */}
                                             <div className="p-3 flex items-start justify-between gap-2">
                                                 <div className="min-w-0 flex-1">
-                                                    {/* Note: In your generation logic, img.componentName is set to 'Generated Asset'. 
-                                                        If you want the template name here instead, swap {img.componentName} for {img.templateName} */}
                                                     <p className="text-xs font-medium text-gray-900 truncate" title={img.templateName}>
                                                         {img.templateName}
                                                     </p>
@@ -1640,7 +1550,6 @@ const generatedFilterData = useMemo(() => {
                                                     </p>
                                                 </div>
                                                 
-                                                {/* New Offer Badge */}
                                                 {offerName && (
                                                     <div className="shrink-0 max-w-[50%] flex items-center">
                                                         <span 
@@ -1657,7 +1566,6 @@ const generatedFilterData = useMemo(() => {
                                 })}
                             </div>
                             
-                            {/* Pagination */}
                             {totalPages > 1 && (
                                 <div className="flex justify-center items-center gap-4 pb-8">
                                     <button onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1} className="p-2 rounded-lg border border-gray-300 bg-white text-gray-600 disabled:opacity-50 hover:bg-gray-50"> <ChevronLeft className="w-4 h-4" /> </button>
@@ -1673,7 +1581,84 @@ const generatedFilterData = useMemo(() => {
 
           {activeView === 'json' && <JsonViewer data={manifest} />}
           {activeView === 'json_images' && <JsonViewer data={rawImagesPayload} />}
-          {showSettings && (<div className="absolute right-0 top-0 bottom-0 shadow-2xl z-50 animate-slide-in"> <SettingsPanel onClose={() => setShowSettings(false)} showDevTools={showDevTools} setShowDevTools={setShowDevTools} /> </div>)}
+          
+          {/* NEW INLINE CONFIGURATION PANEL */}
+          {showSettings && (
+            <div className="absolute right-0 top-0 bottom-0 w-80 bg-white shadow-2xl z-50 animate-slide-in flex flex-col border-l border-gray-200">
+               <div className="p-4 border-b border-gray-100 flex items-center justify-between bg-white">
+                 <h3 className="font-bold text-gray-900">Configuration</h3>
+                 <button onClick={() => setShowSettings(false)} className="text-gray-400 hover:bg-gray-100 p-1 rounded-full transition-colors">
+                   <X className="w-5 h-5"/>
+                 </button>
+               </div>
+               
+               <div className="p-6 border-b border-gray-100 bg-gray-50/50">
+                 
+                 <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Figma Source Project</label>
+                 {availableProjects.length === 0 ? (
+                    <div className="flex items-center gap-2 text-sm text-gray-500 mb-4 px-3 py-2 border border-gray-200 rounded-lg bg-gray-50">
+                        <Loader2 className="w-4 h-4 animate-spin" /> Loading projects...
+                    </div>
+                 ) : (
+                    <select 
+                       value={figmaFileId} 
+                       onChange={(e) => setFigmaFileId(e.target.value)} 
+                       className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none mb-4 shadow-sm bg-white"
+                     >
+                       <option value="" disabled>Select a project...</option>
+                       {availableProjects.map(p => (
+                         <option key={p.id} value={p.id}>{p.name}</option>
+                       ))}
+                     </select>
+                 )}
+
+                 <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Image Folder Name</label>
+                 {availableFolders.length === 0 ? (
+                    <div className="flex items-center gap-2 text-sm text-gray-500 mb-4 px-3 py-2 border border-gray-200 rounded-lg bg-gray-50">
+                        <Loader2 className="w-4 h-4 animate-spin" /> Loading folders...
+                    </div>
+                 ) : (
+                    <select 
+                       value={imageFolder} 
+                       onChange={(e) => setImageFolder(e.target.value)} 
+                       className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none mb-4 shadow-sm bg-white"
+                     >
+                       <option value="" disabled>Select a folder...</option>
+                       {availableFolders.map(folder => (
+                         <option key={folder} value={folder}>{folder}</option>
+                       ))}
+                     </select>
+                 )}
+
+                 <button 
+                   onClick={() => {
+                     if (!figmaFileId.trim()) { 
+                         setError("Figma File ID is required."); 
+                         return; 
+                     }
+                     if (!imageFolder.trim()) { 
+                         setError("Image Folder Name is required."); 
+                         return; 
+                     }
+                     localStorage.setItem('figma_file_key', figmaFileId.trim());
+                     localStorage.setItem('image_folder_key', imageFolder.trim());
+                     setShowSettings(false);
+                     handleRefreshSource();
+                   }}
+                   className="w-full flex items-center justify-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors shadow-sm"
+                 >
+                   <RefreshCw className="w-4 h-4" /> Save & Sync Project
+                 </button>
+                 <p className="text-[10px] text-gray-400 mt-3 leading-relaxed">
+                   These variables define which JSON manifest and Image source folder are pulled from your cloud storage.
+                 </p>
+               </div>
+
+               <div className="flex-1 overflow-auto relative">
+                 <SettingsPanel onClose={() => setShowSettings(false)} showDevTools={showDevTools} setShowDevTools={setShowDevTools} />
+               </div>
+            </div>
+          )}
           
           {showDownloadWarning && (
             <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-fade-in">

@@ -6,8 +6,10 @@ const BASE_URL = 'https://api.figma.com/v1';
 const HARDCODED_PROJECT_ID = '518543293';
 
 // NEW STATIC ENDPOINTS
-const STATIC_MANIFEST_URL = 'https://sfo3.digitaloceanspaces.com/aimedia-json/manifests/zH45M5SvQ8E6G9lwUXW4ny.json';
+const getStaticManifestUrl = (fileId: string) => `https://sfo3.digitaloceanspaces.com/aimedia-json/manifests/${fileId}.json`;
 const STATIC_IMAGES_URL = 'https://faas-sfo3-7872a1dd.doserverless.co/api/v1/web/fn-294823dc-1cb3-4d21-8544-5a627fcc174e/default/fetch-images';
+const STATIC_PROJECTS_URL = 'https://faas-sfo3-7872a1dd.doserverless.co/api/v1/web/fn-294823dc-1cb3-4d21-8544-5a627fcc174e/default/fetch-figma-projectid';
+const STATIC_IMAGE_FOLDERS_URL = 'https://faas-sfo3-7872a1dd.doserverless.co/api/v1/web/fn-294823dc-1cb3-4d21-8544-5a627fcc174e/default/fetch-images-folderid';
 
 // Simplified Env Getter
 export const getEnv = (key: string): string => {
@@ -51,20 +53,15 @@ export const saveFigmaConfig = (config: FigmaConfig) => {
 };
 
 // --- HELPER: RECURSIVE FOLDER PARSING ---
-// Traverses nested subFolders and builds a path string (e.g. "Test/Category A/Item")
 const processRecursive = (node: any, parentPath: string, results: DriveAsset[], indexRef: { count: number }) => {
     if (!node) return;
 
-    // Determine name
     const rawName = node.folderName || node.name || 'Untitled';
     const cleanName = rawName.trim();
     
-    // Construct Path
-    // Use API provided fullPath if available (removing trailing slash), otherwise calculate it
     const pathFromApi = node.fullPath ? node.fullPath.replace(/\/$/, '') : null;
     const fullPath = pathFromApi || (parentPath ? `${parentPath}/${cleanName}` : cleanName);
     
-    // 1. Extract Images from this level
     if (node.images && Array.isArray(node.images)) {
         node.images.forEach((url: string) => {
              if (typeof url !== 'string') return;
@@ -76,14 +73,12 @@ const processRecursive = (node: any, parentPath: string, results: DriveAsset[], 
                 webContentLink: url,
                 mimeType: 'image/jpeg',
                 size: 'Unknown',
-                // UPDATED: Use cleanName (folderName) instead of fullPath as requested
                 folder: cleanName 
              });
              indexRef.count++;
         });
     }
 
-    // 2. Recurse into subFolders
     if (node.subFolders && Array.isArray(node.subFolders)) {
         node.subFolders.forEach((child: any) => {
             processRecursive(child, fullPath, results, indexRef);
@@ -93,12 +88,51 @@ const processRecursive = (node: any, parentPath: string, results: DriveAsset[], 
 
 // --- NEW STATIC FETCHERS ---
 
-export const fetchStaticManifest = async (): Promise<HeadlessManifest> => {
+export const fetchFigmaProjects = async (): Promise<{id: string, name: string}[]> => {
     try {
-        const url = `${STATIC_MANIFEST_URL}?t=${Date.now()}`;
+        const url = `${STATIC_PROJECTS_URL}?t=${Date.now()}`;
         const res = await fetch(url);
         
-        if (!res.ok) throw new Error(`Failed to fetch manifest: ${res.statusText}`);
+        if (!res.ok) throw new Error(`Failed to fetch projects: ${res.statusText}`);
+        return await res.json();
+    } catch (e: any) {
+        console.error("Static Projects Error:", e);
+        throw e;
+    }
+};
+
+export const fetchImageFolders = async (): Promise<string[]> => {
+    try {
+        const url = `${STATIC_IMAGE_FOLDERS_URL}?t=${Date.now()}`;
+        const res = await fetch(url);
+        
+        if (!res.ok) throw new Error(`Failed to fetch image folders: ${res.statusText}`);
+        const data = await res.json();
+        
+        if (data.success && data.folders) {
+            return data.folders;
+        }
+        return [];
+    } catch (e: any) {
+        console.error("Static Image Folders Error:", e);
+        throw e;
+    }
+};
+
+export const fetchStaticManifest = async (): Promise<HeadlessManifest> => {
+    const fileId = getFigmaConfig().fileKey;
+
+    if (!fileId) {
+        throw new Error("Missing Figma File ID. Please enter it in the Configuration panel.");
+    }
+
+    try {
+        const url = `${getStaticManifestUrl(fileId)}?t=${Date.now()}`;
+        const res = await fetch(url);
+        
+        if (!res.ok) {
+            throw new Error(`Manifest not found. Verify your Figma File ID is correct.`);
+        }
         return await res.json();
     } catch (e: any) {
         console.error("Static Manifest Error:", e);
@@ -107,17 +141,23 @@ export const fetchStaticManifest = async (): Promise<HeadlessManifest> => {
 };
 
 export const fetchStaticImages = async (): Promise<{ assets: DriveAsset[], raw: any }> => {
+    const imageFolder = getEnv('IMAGE_FOLDER_KEY') || localStorage.getItem('image_folder_key');
+
+    if (!imageFolder) {
+        throw new Error("Missing Image Folder Name. Please enter it in the Configuration panel.");
+    }
+
     try {
         const url = `${STATIC_IMAGES_URL}?t=${Date.now()}`;
         
-        console.log(`[StaticAPI] Fetching URL: ${url}`);
+        console.log(`[StaticAPI] Fetching URL: ${url} with folder: ${imageFolder}`);
         
         const res = await fetch(url, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify({ folder: "Dog_Stop" })
+            body: JSON.stringify({ folder: imageFolder }) 
         });
 
         if (!res.ok) throw new Error(`Failed to fetch images: ${res.statusText}`);
@@ -126,7 +166,6 @@ export const fetchStaticImages = async (): Promise<{ assets: DriveAsset[], raw: 
         const allAssets: DriveAsset[] = [];
         const indexRef = { count: 0 };
 
-        // 1. Handle Images at Root (if any)
         if (data.images && Array.isArray(data.images)) {
              data.images.forEach((url: string) => {
                  if (typeof url !== 'string') return;
@@ -144,16 +183,11 @@ export const fetchStaticImages = async (): Promise<{ assets: DriveAsset[], raw: 
             });
         }
 
-        // 2. Handle Subfolders Recursively
-        // We pass '' as parentPath so the top-level folders in the response 
-        // become the root folders in the UI path (e.g. "Test" or "Category")
         if (data.subFolders && Array.isArray(data.subFolders)) {
             data.subFolders.forEach((child: any) => {
                 processRecursive(child, '', allAssets, indexRef);
             });
         }
-        
-        // 3. Fallback for flat 'folders' structure if API schema varies
         else if (data.folders && Array.isArray(data.folders)) {
              data.folders.forEach((child: any) => {
                 processRecursive(child, '', allAssets, indexRef);
@@ -168,7 +202,6 @@ export const fetchStaticImages = async (): Promise<{ assets: DriveAsset[], raw: 
 };
 
 // --- EXISTING LEGACY FETCHERS ---
-
 const figmaFetch = async (endpoint: string, token: string) => {
   let url = '';
   let headers: Record<string, string> = {};
@@ -200,14 +233,6 @@ export const getProjectFiles = async (projectId: string, token: string): Promise
   } catch (e) { return []; }
 };
 
-export const getFigmaPages = async (config: Pick<FigmaConfig, 'personalAccessToken' | 'fileKey'>): Promise<FigmaPage[]> => {
-    return []; // Stub
-};
-
-export const scanFigmaLibrary = async (config: FigmaConfig): Promise<ComponentMetadata[]> => {
-    return [];
-};
-
-export const fetchTemplates = async (config: FigmaConfig): Promise<Template[]> => {
-    return [];
-};
+export const getFigmaPages = async (config: Pick<FigmaConfig, 'personalAccessToken' | 'fileKey'>): Promise<FigmaPage[]> => { return []; };
+export const scanFigmaLibrary = async (config: FigmaConfig): Promise<ComponentMetadata[]> => { return []; };
+export const fetchTemplates = async (config: FigmaConfig): Promise<Template[]> => { return []; };
